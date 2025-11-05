@@ -1,0 +1,63 @@
+name: Deploy TON (Order Bot su VPS)
+
+on:
+  push:
+    branches: [ main ]   # cambia in [ master ] se il default branch è master
+  workflow_dispatch:
+
+concurrency: deploy-telegram-order-notifier
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy & restart (SSH)
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}      # es. "ton"
+          key: ${{ secrets.SSH_PRIVATE_KEY }}    # chiave privata per accedere come $VPS_USER
+          script: |
+            set -euo pipefail
+
+            # ===== Config =====
+            APP_DIR="/opt/telegram-order-notifier/app"
+            RUN_DIR="/opt/telegram-order-notifier/run"
+            SERVICE="orderbot.service"
+            BRANCH="main"   # cambia in "master" se serve
+
+            # 1) Vai nella cartella del progetto
+            cd "$APP_DIR"
+
+            # 2) Allinea il repo in modo pulito (repo già clonato sulla VPS)
+            git fetch --all --prune
+            git reset --hard "origin/${BRANCH}"
+            git clean -fdx
+
+            # 3) (facoltativo) stampa versioni per debug
+            python3 -V || true
+            .venv/bin/python -V || true
+
+            # 4) Venv + dipendenze
+            python3 -m venv .venv || true
+            set +u
+            source .venv/bin/activate
+            set -u
+            pip install --upgrade pip
+            if [ -f requirements.txt ]; then
+              pip install -r requirements.txt
+            else
+              pip install yfinance python-telegram-bot pyyaml pandas
+            fi
+
+            # 5) Permessi stretti su /opt/telegram-order-notifier
+            sudo chown -R ton:ton /opt/telegram-order-notifier
+            sudo chmod -R 750 /opt/telegram-order-notifier
+            # La cartella run deve essere scrivibile dal servizio
+            sudo mkdir -p "$RUN_DIR"
+            sudo chown -R ton:ton "$RUN_DIR"
+
+            # 6) Reload/restart systemd
+            sudo systemctl daemon-reload || true
+            sudo systemctl restart "${SERVICE}"
+            sudo systemctl status --no-pager "${SERVICE}" || true

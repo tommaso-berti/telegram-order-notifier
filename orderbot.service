@@ -1,0 +1,28 @@
+# /etc/systemd/system/orderbot.service
+[Unit]
+Description=Telegram Order Notifier (telegram-order-notifier)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ton
+Group=ton
+Type=simple
+WorkingDirectory=/opt/telegram-order-notifier/app
+EnvironmentFile=/opt/telegram-order-notifier/.env
+ExecStart=/opt/telegram-order-notifier/app/.venv/bin/python order_bot.py --config /opt/telegram-order-notifier/app/orders_config.yaml
+Restart=on-failure
+RestartSec=10s
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/telegram-order-notifier/run
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

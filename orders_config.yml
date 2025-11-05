@@ -1,0 +1,26 @@
+# orders_config.yaml
+general:
+  timezone: "Europe/Rome"
+  data_source: "yahoo"
+  base_currency: "EUR"
+  out_dir: "/opt/telegram-order-notifier/run"
+  log_csv: true
+  log_file: true
+  csv_path: "/opt/telegram-order-notifier/run/orders_%Y-%m-%d.csv"
+  logfile_path: "/opt/telegram-order-notifier/run/orderbot.log"
+
+strategy:
+  buy_offset_pct: -2.0      # BUY LIMIT a -2% dal close
+  take_profit_pct: 2.3      # TAKE PROFIT a +2.3%
+  stop_loss_pct: -2.5       # STOP LOSS a -2.5%
+  position_size_eur: 250    # Amount fisso per ticker
+
+universe:
+  tickers:
+    - AAPL
+    - SAP.DE
+
+notify:
+  telegram: true
+  token_env: "TELEGRAM_BOT_TOKEN"
+  chat_id_env: "TELEGRAM_CHAT_ID"

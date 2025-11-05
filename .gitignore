@@ -1,0 +1,54 @@
+###############
+# JetBrains / IntelliJ / PyCharm
+###############
+# Default ignored files
+/shelf/
+/.idea/workspace.xml
+
+# Editor-based HTTP Client requests
+/httpRequests/
+
+# Datasource local storage ignored files
+/dataSources/
+/dataSources.local.xml
+
+.idea/
+
+
+###############
+# Python
+###############
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+pip-wheel-metadata/
+
+# Virtualenv & local env
+.env
+.env.*
+!.env.template   # keep the template in the repo
+env/
+venv/
+.venv/
+
+###############
+# Output, log, file runtime
+###############
+run/
+*.log
+*.csv
+
+
+###############
+# Editor / OS generici
+###############
+.vscode/
+*.swp
+*.swo
+*.DS_Store
+Thumbs.db
