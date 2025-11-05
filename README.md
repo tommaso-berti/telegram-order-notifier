@@ -22,7 +22,7 @@ chmod -R 750 /opt/telegram-order-notifier
 # ----------------------------------------------------
 sudo -u ton bash -lc '
 cd /opt/telegram-order-notifier/app
-git clone <YOUR_REPO_SSH_URL> . || true
+git clone <YOUR_REPO_HTTP> . || true
 git fetch --all --prune
 git reset --hard origin/master   # or origin/maing
 '
