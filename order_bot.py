@@ -11,7 +11,7 @@ if not TOKEN or not CHAT_ID:
     raise Exception("Manca TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID nel file .env")
 
 # Carica il file di configurazione ordini
-with open("orders_config.yml") as f:
+with open("orders_config.yaml") as f:
     CONFIG = yaml.safe_load(f)
 
 def main():
