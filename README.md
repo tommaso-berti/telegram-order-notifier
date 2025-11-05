@@ -113,3 +113,89 @@ ls -lah /opt/telegram-order-notifier/run
 # /etc/systemd/system/
 # ├── orderbot.service
 # └── orderbot.timer
+
+
+
+
+
+
+
+
+# ====================================================
+# 📌 TELEGRAM ORDER NOTIFIER – USEFUL COMMANDS
+# ====================================================
+
+# ----------------------------------------------------
+# ✅ START, STOP OR RESTART THE BOT
+# ----------------------------------------------------
+sudo systemctl start orderbot.service        # Manually start the bot
+sudo systemctl restart orderbot.service      # Restart the bot (after code changes)
+sudo systemctl stop orderbot.service         # Stop the bot
+
+# ----------------------------------------------------
+# ✅ ENABLE / MANAGE THE SYSTEMD TIMER (if used)
+# ----------------------------------------------------
+sudo systemctl enable --now orderbot.timer   # Enable and start the timer
+sudo systemctl disable orderbot.timer        # Disable the timer
+sudo systemctl stop orderbot.timer           # Stop the timer
+
+# ----------------------------------------------------
+# ✅ CHECK SERVICE / TIMER STATUS
+# ----------------------------------------------------
+sudo systemctl status orderbot.service --no-pager
+sudo systemctl status orderbot.timer --no-pager
+
+# ----------------------------------------------------
+# ✅ VIEW LOGS
+# ----------------------------------------------------
+sudo journalctl -u orderbot.service -n 50 --no-pager   # Last 50 log lines
+sudo journalctl -u orderbot.service -f                 # Live logs / streaming
+
+# ----------------------------------------------------
+# ✅ IMPORTANT FILE LOCATIONS
+# ----------------------------------------------------
+# /opt/telegram-order-notifier/.env                     ← environment variables (TOKEN, CHAT_ID)
+# /opt/telegram-order-notifier/app/order_bot.py         ← main Python script
+# /opt/telegram-order-notifier/app/orders_config.yaml   ← bot configuration file
+# /etc/systemd/system/orderbot.service                  ← systemd service file
+# /etc/systemd/system/orderbot.timer                    ← systemd timer file
+# /opt/telegram-order-notifier/run/                     ← log files, CSV exports, etc.
+
+# ----------------------------------------------------
+# ✅ APPLY CHANGES TO SYSTEMD (RELOAD & RESTART)
+# ----------------------------------------------------
+sudo systemctl daemon-reload
+sudo systemctl restart orderbot.service
+
+# ----------------------------------------------------
+# ✅ EDIT THE .env FILE (Telegram Token / Chat ID)
+# ----------------------------------------------------
+sudo nano /opt/telegram-order-notifier/.env
+sudo chmod 600 /opt/telegram-order-notifier/.env
+sudo chown root:root /opt/telegram-order-notifier/.env
+sudo systemctl restart orderbot.service
+
+# ----------------------------------------------------
+# ✅ RUN THE BOT MANUALLY (WITHOUT SYSTEMD)
+# ----------------------------------------------------
+sudo -u ton bash -lc '
+cd /opt/telegram-order-notifier/app
+source .venv/bin/activate
+python order_bot.py --config orders_config.yaml
+'
+
+# ----------------------------------------------------
+# ✅ CHECK IF SYSTEMD LOADED THE ENV VARIABLES
+# ----------------------------------------------------
+sudo systemctl show orderbot.service -p EnvironmentFile -p Environment
+# → Should display TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
+
+# ----------------------------------------------------
+# ✅ QUICK ERROR TROUBLESHOOTING
+# ----------------------------------------------------
+sudo journalctl -u orderbot.service -n 100 --no-pager
+sudo systemctl status orderbot.service
+
+# ====================================================
+# ✅ DONE – This is everything you need to manage the bot
+# ====================================================

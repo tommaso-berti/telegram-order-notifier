@@ -1,25 +1,27 @@
-import os
+import os, sys, yaml, asyncio
 from datetime import datetime
-import yaml
 from telegram import Bot
 
-# Carica variabili dal sistema (systemd le prenderà da .env)
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 if not TOKEN or not CHAT_ID:
-    raise Exception("Manca TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID nel file .env")
+    print("Env non presenti: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID", file=sys.stderr)
+    sys.exit(1)
 
-# Carica il file di configurazione ordini
-with open("orders_config.yaml") as f:
-    CONFIG = yaml.safe_load(f)
+CFG_PATH = "/opt/telegram-order-notifier/app/orders_config.yaml"
 
-def main():
-    bot = Bot(TOKEN)
+async def main():
+    # carica config (se esiste)
+    try:
+        cfg = yaml.safe_load(open(CFG_PATH)) if os.path.exists(CFG_PATH) else {}
+    except Exception as e:
+        print(f"Warning config: {e}", file=sys.stderr)
+        cfg = {}
 
-    # Esempio: messaggio semplice per test
-    msg = f"✅ Bot eseguito alle {datetime.now().strftime('%H:%M:%S')}"
-    bot.send_message(chat_id=CHAT_ID, text=msg)
+    msg = f"✅ TON ok {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | cfg keys: {list(cfg.keys())}"
+    async with Bot(token=TOKEN) as bot:
+        await bot.send_message(chat_id=int(CHAT_ID), text=msg)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
