@@ -49,15 +49,12 @@ jobs:
             else
               pip install yfinance python-telegram-bot pyyaml pandas
             fi
-
-            # 5) Permessi stretti su /opt/telegram-order-notifier
-            sudo chown -R deploy:deploy /opt/telegram-order-notifier
-            sudo chmod -R 750 /opt/telegram-order-notifier
+            
             # La cartella run deve essere scrivibile dal servizio
             sudo mkdir -p "$RUN_DIR"
             sudo chown -R deploy:deploy "$RUN_DIR"
 
             # 6) Reload/restart systemd
-            sudo systemctl daemon-reload || true
-            sudo systemctl restart "${SERVICE}"
-            sudo systemctl status --no-pager "${SERVICE}" || true
+            sudo -n systemctl daemon-reload || true
+            sudo -n systemctl restart "${SERVICE}"
+            sudo -n systemctl status --no-pager "${SERVICE}" || true
