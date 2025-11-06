@@ -1,8 +1,6 @@
-import os
-import sys
-import math
-import asyncio
-from datetime import datetime
+sudo -u ton tee /opt/telegram-order-notifier/app/order_bot.py >/dev/null <<'PY'
+import os, sys, math, asyncio
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import yaml
@@ -16,149 +14,146 @@ def load_config(path: str) -> dict:
     with open(path, "r") as f:
         return yaml.safe_load(f) or {}
 
-def get_env_token_and_chat(config: dict):
-    # Sezione notify permette override dei nomi variabili, ma di default usiamo TELEGRAM_*
-    token_env = (config.get("notify", {}) or {}).get("token_env", "TELEGRAM_BOT_TOKEN")
-    chat_env  = (config.get("notify", {}) or {}).get("chat_id_env", "TELEGRAM_CHAT_ID")
+def get_env_vars(cfg: dict):
+    notify = cfg.get("notify", {}) or {}
+    token_env = notify.get("token_env", "TELEGRAM_BOT_TOKEN")
+    chat_env  = notify.get("chat_id_env", "TELEGRAM_CHAT_ID")
     token = os.getenv(token_env)
     chat_id = os.getenv(chat_env)
     if not token or not chat_id:
         raise RuntimeError(f"Missing env vars: {token_env} / {chat_env}")
-    return token, chat_id
+    return token, int(chat_id)
 
-def get_close_and_currency(ticker: str):
-    """
-    Ritorna (last_close, currency) per un ticker Yahoo.
-    Usa l'ultimo Close disponibile (preferibilmente il più recente a mercato chiuso).
-    """
+def last_close_and_currency(ticker: str):
     t = yf.Ticker(ticker)
-    # Prova fast_info
     try:
-        c = getattr(t.fast_info, "currency", None) or t.info.get("currency")
+        currency = getattr(t.fast_info, "currency", None)
     except Exception:
-        c = None
-
-    # Storico 5 giorni per avere un close affidabile
-    hist = t.history(period="5d", interval="1d", auto_adjust=False, actions=False)
-    if hist is None or hist.empty or "Close" not in hist.columns:
-        raise RuntimeError(f"No price history for {ticker}")
-    # ultimo valore non NaN
-    close = float(hist["Close"].dropna().iloc[-1])
-    if not c:
-        # fallback: prova a dedurre da ISIN/market, ma se non c'è lascia "USD" per AAPL e "EUR" per .DE
-        c = "EUR" if ticker.endswith(".DE") else "USD"
-    return close, c
-
-def get_fx_rate_to_base(asset_ccy: str, base_ccy: str) -> float:
-    """
-    Converte 1 unità di asset_ccy in base_ccy.
-    Esempio: asset=USD, base=EUR -> ritorna quante EUR vale 1 USD (≈ 1 / EURUSD=X)
-    """
-    asset_ccy = asset_ccy.upper()
-    base_ccy = base_ccy.upper()
-    if asset_ccy == base_ccy:
-        return 1.0
-
-    # Prova coppia DIRETTA: BASEASSET=X (es. EURUSD=X -> USD per EUR)
-    # Noi vogliamo asset->base, cioè quanti BASE per 1 ASSET
-    # Se abbiamo EURUSD=X = USD per 1 EUR, allora 1 USD = 1 / (EURUSD) EUR
-    pair_direct = f"{base_ccy}{asset_ccy}=X"   # es. EURUSD=X
-    pair_inverse = f"{asset_ccy}{base_ccy}=X" # es. USDEUR=X
-
-    def _last_close(symbol: str) -> float | None:
+        currency = None
+    if not currency:
         try:
-            h = yf.Ticker(symbol).history(period="5d", interval="1d")
-            if h is None or h.empty:
-                return None
-            return float(h["Close"].dropna().iloc[-1])
+            currency = (t.info or {}).get("currency")
         except Exception:
-            return None
+            currency = None
+    hist = t.history(period="10d", interval="1d", auto_adjust=False, actions=False)
+    if hist is None or hist.empty or "Close" not in hist.columns:
+        raise RuntimeError(f"No daily close for {ticker}")
+    close = float(hist["Close"].dropna().iloc[-1])
+    close_date = hist.index[-1].to_pydatetime().date()
+    if not currency:
+        currency = "EUR" if ticker.endswith(".DE") else "USD"
+    return close, currency, close_date
 
-    px_direct = _last_close(pair_direct)
-    if px_direct and px_direct > 0:
-        # px_direct = ASSET per 1 BASE? No, è asset_ccy per 1 base_ccy (es. USD per 1 EUR)
-        # Noi vogliamo BASE per 1 ASSET -> 1 / px_direct
-        return 1.0 / px_direct
-
-    px_inverse = _last_close(pair_inverse)
-    if px_inverse and px_inverse > 0:
-        # px_inverse = base_ccy per 1 asset_ccy -> esattamente quello che vogliamo
-        return px_inverse
-
-    raise RuntimeError(f"Cannot fetch FX {asset_ccy}->{base_ccy}")
+def fx_to_eur(asset_ccy: str) -> float:
+    asset = asset_ccy.upper()
+    if asset == "EUR":
+        return 1.0
+    # Prefer direct quote USDEUR=X, GBPEUR=X, etc. If missing, invert EURXXX=X
+    direct = f"{asset}EUR=X"   # e.g. USDEUR=X -> EUR per 1 USD
+    inverse = f"EUR{asset}=X"  # e.g. EURUSD=X -> USD per 1 EUR, need inverse
+    def _px(sym):
+        try:
+            h = yf.Ticker(sym).history(period="10d", interval="1d")
+            if h is not None and not h.empty:
+                return float(h["Close"].dropna().iloc[-1])
+        except Exception:
+            pass
+        return None
+    px = _px(direct)
+    if px and px > 0:
+        return px
+    px_inv = _px(inverse)
+    if px_inv and px_inv > 0:
+        return 1.0 / px_inv
+    raise RuntimeError(f"Cannot fetch FX {asset}->EUR")
 
 def compute_levels(close: float, buy_off_pct: float, tp_pct: float, sl_pct: float):
-    entry = close * (1.0 + buy_off_pct / 100.0)
-    tp    = entry * (1.0 + tp_pct / 100.0)
-    sl    = entry * (1.0 + sl_pct / 100.0)
+    entry = close * (1 + buy_off_pct / 100.0)
+    tp    = entry * (1 + tp_pct / 100.0)
+    sl    = entry * (1 + sl_pct / 100.0)
     return entry, tp, sl
 
-def size_position(position_size_eur: float, entry_price_asset_ccy: float, fx_to_eur: float) -> int:
-    """
-    position_size_eur: budget in EUR
-    entry_price_asset_ccy: prezzo entry nella valuta del titolo
-    fx_to_eur: quanti EUR vale 1 unità di valuta del titolo
-    """
-    entry_in_eur = entry_price_asset_ccy * fx_to_eur
-    if entry_in_eur <= 0:
-        return 0
-    qty = math.floor(position_size_eur / entry_in_eur)
-    return max(qty, 0)
-
-def format_money(x: float, ccy: str) -> str:
-    # formattazione semplice, 2-4 decimali a seconda del valore
-    if x >= 100:
-        return f"{x:,.2f} {ccy}"
-    elif x >= 1:
-        return f"{x:,.4f} {ccy}"
-    else:
-        return f"{x:,.6f} {ccy}"
+def fmt_eur(x: float) -> str:
+    return f"{x:.2f} EUR"
 
 async def main():
-    # 1) load config
     cfg = load_config(CONFIG_PATH)
     tz = ZoneInfo(cfg["general"]["timezone"])
     base_ccy = cfg["general"]["base_currency"].upper()
-    pos_eur = float(cfg["strategy"]["position_size_eur"])
+    if base_ccy != "EUR":
+        raise RuntimeError("This script is configured to always output EUR.")
+    out_dir = cfg["general"]["out_dir"]
+    csv_path_template = cfg["general"]["csv_path"]
+    do_csv = bool(cfg["general"].get("log_csv", True))
+
     buy_off = float(cfg["strategy"]["buy_offset_pct"])
     tp_pct  = float(cfg["strategy"]["take_profit_pct"])
     sl_pct  = float(cfg["strategy"]["stop_loss_pct"])
     tickers = list(cfg["universe"]["tickers"])
 
-    # 2) env vars
-    token, chat_id = get_env_token_and_chat(cfg)
+    token, chat_id = get_env_vars(cfg)
 
-    # 3) compute per-ticker
-    lines = []
-    header = f"📊 Order levels — {datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')} {cfg['general']['timezone']}\nBase: {base_ccy} | Position size: {pos_eur:.2f} EUR\n"
-    lines.append(header)
+    rows = []
+    message_lines = []
+    # We will base "as_of" on each ticker's last close; also keep a display header date
+    header_date = None
 
     for tk in tickers:
         try:
-            close, asset_ccy = get_close_and_currency(tk)
-            entry, tp, sl = compute_levels(close, buy_off, tp_pct, sl_pct)
-            fx_to_eur = get_fx_rate_to_base(asset_ccy, base_ccy)  # EUR per 1 asset_ccy
-            qty = size_position(pos_eur, entry, fx_to_eur)
-            entry_eur = entry * fx_to_eur
-            total_eur = qty * entry_eur
+            close_ccy, asset_ccy, close_date = last_close_and_currency(tk)
+            if header_date is None:
+                header_date = close_date
+            entry_ccy, tp_ccy, sl_ccy = compute_levels(close_ccy, buy_off, tp_pct, sl_pct)
+            rate = fx_to_eur(asset_ccy)  # EUR per 1 asset_ccy
+
+            close_eur = close_ccy * rate
+            entry_eur = entry_ccy * rate
+            tp_eur    = tp_ccy * rate
+            sl_eur    = sl_ccy * rate
+
+            # round to 2 decimals for display and CSV
+            rec = {
+                "date": close_date.isoformat(),
+                "ticker": tk,
+                "close_eur": round(close_eur, 2),
+                "entry_eur": round(entry_eur, 2),
+                "take_profit_eur": round(tp_eur, 2),
+                "stop_loss_eur": round(sl_eur, 2),
+                "buy_offset_pct": buy_off,
+                "take_profit_pct": tp_pct,
+                "stop_loss_pct": sl_pct,
+            }
+            rows.append(rec)
 
             block = [
-                f"— {tk} ({asset_ccy})",
-                f"  Close: {format_money(close, asset_ccy)}",
-                f"  Entry: {format_money(entry, asset_ccy)}",
-                f"  TP:    {format_money(tp, asset_ccy)}",
-                f"  SL:    {format_money(sl, asset_ccy)}",
-                f"  Qty:   {qty}  (~{format_money(entry_eur, base_ccy)} each, total ~{format_money(total_eur, base_ccy)})",
+                f"Ticker: {tk}",
+                f"Close:      {fmt_eur(rec['close_eur'])}",
+                f"Buy Limit:  {fmt_eur(rec['entry_eur'])} ({buy_off:+.1f}%)",
+                f"Take Profit:{fmt_eur(rec['take_profit_eur'])} ({tp_pct:+.1f}%)",
+                f"Stop Loss:  {fmt_eur(rec['stop_loss_eur'])} ({sl_pct:+.1f}%)",
+                ""
             ]
-            lines.append("\n".join(block))
+            message_lines.append("\n".join(block))
         except Exception as e:
-            lines.append(f"— {tk}: ERROR {e}")
+            message_lines.append(f"Ticker: {tk}\nERROR: {e}\n")
 
-    text = "\n\n".join(lines)
+    header_date_str = header_date.isoformat() if header_date else datetime.now(tz).date().isoformat()
+    header = f"Daily Order Levels for {header_date_str} (based on previous close)\n"
+    text = header + "\n".join(message_lines)
 
-    # 4) send via Telegram (async API v20+)
+    # Save CSV if requested
+    saved_path = None
+    if do_csv:
+        os.makedirs(out_dir, exist_ok=True)
+        csv_path = datetime.now(tz).strftime(csv_path_template)
+        df = pd.DataFrame(rows)
+        df.to_csv(csv_path, index=False)
+        saved_path = csv_path
+        text += f"\nSaved to {csv_path}"
+
+    # Send Telegram message (async, PTB v20+)
     async with Bot(token=token) as bot:
-        await bot.send_message(chat_id=int(chat_id), text=text)
+        await bot.send_message(chat_id=chat_id, text=text)
 
 if __name__ == "__main__":
     try:
@@ -166,3 +161,6 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
+PY
+sudo chown ton:ton /opt/telegram-order-notifier/app/order_bot.py
+sudo chmod 750 /opt/telegram-order-notifier/app/order_bot.py

@@ -1,11 +1,13 @@
-# /etc/systemd/system/orderbot.timer
+sudo tee /etc/systemd/system/orderbot.timer >/dev/null <<'UNIT'
 [Unit]
-Description=Run Telegram Order Notifier every weekday at 08:15 Europe/Rome
+Description=Run Telegram Order Notifier daily at 22:30 Europe/Rome
 
 [Timer]
-OnCalendar=Mon..Fri 08:15
+# Run every day at 22:30 local time (server timezone should be Europe/Rome)
+OnCalendar=*-*-* 22:30:00
 Persistent=true
 Unit=orderbot.service
 
 [Install]
 WantedBy=timers.target
+UNIT

@@ -1,28 +1,21 @@
-# /etc/systemd/system/orderbot.service
+sudo tee /etc/systemd/system/orderbot.service >/dev/null <<'UNIT'
 [Unit]
-Description=Telegram Order Notifier (telegram-order-notifier)
+Description=Telegram Order Notifier (daily signal generator)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
+Type=oneshot
 User=ton
 Group=ton
-Type=simple
 WorkingDirectory=/opt/telegram-order-notifier/app
 EnvironmentFile=/opt/telegram-order-notifier/.env
-ExecStart=/opt/telegram-order-notifier/app/.venv/bin/python order_bot.py --config /opt/telegram-order-notifier/app/orders_config.yaml
-Restart=on-failure
-RestartSec=10s
-
-# Hardening
+ExecStart=/opt/telegram-order-notifier/app/.venv/bin/python /opt/telegram-order-notifier/app/order_bot.py
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
 ReadWritePaths=/opt/telegram-order-notifier/run
-
 StandardOutput=journal
 StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
+UNIT

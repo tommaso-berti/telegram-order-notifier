@@ -15,8 +15,8 @@ jobs:
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}      # es. "ton"
-          key: ${{ secrets.SSH_PRIVATE_KEY }}    # chiave privata per accedere come $VPS_USER
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -euo pipefail
 
