@@ -1,4 +1,4 @@
-sudo -u ton tee /opt/telegram-order-notifier/app/order_bot.py >/dev/null <<'PY'
+sudo -u deploy tee /opt/telegram-order-notifier/app/order_bot.py >/dev/null <<'PY'
 import os, sys, math, asyncio
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -162,5 +162,5 @@ if __name__ == "__main__":
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
 PY
-sudo chown ton:ton /opt/telegram-order-notifier/app/order_bot.py
+sudo chown deploy:deploy /opt/telegram-order-notifier/app/order_bot.py
 sudo chmod 750 /opt/telegram-order-notifier/app/order_bot.py

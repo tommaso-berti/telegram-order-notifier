@@ -6,8 +6,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=ton
-Group=ton
+User=deploy
+Group=deploy
 WorkingDirectory=/opt/telegram-order-notifier/app
 EnvironmentFile=/opt/telegram-order-notifier/.env
 ExecStart=/opt/telegram-order-notifier/app/.venv/bin/python /opt/telegram-order-notifier/app/order_bot.py

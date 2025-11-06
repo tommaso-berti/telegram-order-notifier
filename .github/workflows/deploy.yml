@@ -51,11 +51,11 @@ jobs:
             fi
 
             # 5) Permessi stretti su /opt/telegram-order-notifier
-            sudo chown -R ton:ton /opt/telegram-order-notifier
+            sudo chown -R deploy:deploy /opt/telegram-order-notifier
             sudo chmod -R 750 /opt/telegram-order-notifier
             # La cartella run deve essere scrivibile dal servizio
             sudo mkdir -p "$RUN_DIR"
-            sudo chown -R ton:ton "$RUN_DIR"
+            sudo chown -R deploy:deploy "$RUN_DIR"
 
             # 6) Reload/restart systemd
             sudo systemctl daemon-reload || true
