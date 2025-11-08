@@ -1,0 +1,4 @@
+yfinance
+python-telegram-bot>=20
+PyYAML
+pandas
