@@ -2,7 +2,7 @@ name: Deploy TON (Order Bot su VPS)
 
 on:
   push:
-    branches: [ main ]   # cambia in [ master ] se il default branch è master
+    branches: [ main ]
   workflow_dispatch:
 
 concurrency: deploy-telegram-order-notifier
@@ -20,41 +20,44 @@ jobs:
           script: |
             set -euo pipefail
 
-            # ===== Config =====
             APP_DIR="/opt/telegram-order-notifier/app"
             RUN_DIR="/opt/telegram-order-notifier/run"
             SERVICE="orderbot.service"
-            BRANCH="main"   # cambia in "master" se serve
+            BRANCH="main"
 
-            # 1) Vai nella cartella del progetto
             cd "$APP_DIR"
+            if [ ! -d .git ]; then
+              git clone https://github.com/tommaso-berti/telegram-order-notifier.git .
+            fi
 
-            # 2) Allinea il repo in modo pulito (repo già clonato sulla VPS)
-            git fetch --all --prune
+            # ensure origin over HTTPS (public)
+            git remote set-url origin https://github.com/tommaso-berti/telegram-order-notifier.git
+
+            git fetch --all --prune --depth=1
             git reset --hard "origin/${BRANCH}"
             git clean -fdx
 
-            # 3) (facoltativo) stampa versioni per debug
-            python3 -V || true
-            .venv/bin/python -V || true
-
-            # 4) Venv + dipendenze
             python3 -m venv .venv || true
-            set +u
-            source .venv/bin/activate
-            set -u
+            set +u; source .venv/bin/activate; set -u
             pip install --upgrade pip
             if [ -f requirements.txt ]; then
               pip install -r requirements.txt
             else
               pip install yfinance python-telegram-bot pyyaml pandas
             fi
-            
-            # La cartella run deve essere scrivibile dal servizio
-            sudo mkdir -p "$RUN_DIR"
-            sudo chown -R deploy:deploy "$RUN_DIR"
+            deactivate
 
-            # 6) Reload/restart systemd
-            sudo -n systemctl daemon-reload || true
-            sudo -n systemctl restart "${SERVICE}"
-            sudo -n systemctl status --no-pager "${SERVICE}" || true
+            # write .env from Secrets (Option A)
+            sudo bash -lc "cat > /opt/telegram-order-notifier/.env <<EOF
+  TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+  EOF
+  chmod 640 /opt/telegram-order-notifier/.env
+  chown deploy:deploy /opt/telegram-order-notifier/.env"
+  
+  sudo mkdir -p "$RUN_DIR"
+  sudo chown -R deploy:deploy "$RUN_DIR"
+  
+  sudo systemctl daemon-reload || true
+  sudo systemctl restart "${SERVICE}"
+  sudo systemctl status --no-pager "${SERVICE}" || true

@@ -29,8 +29,6 @@ build/
 pip-wheel-metadata/
 
 # Virtualenv & local env
-.env
-.env.*
 !.env.template   # keep the template in the repo
 env/
 venv/
