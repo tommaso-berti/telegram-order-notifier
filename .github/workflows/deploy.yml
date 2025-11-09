@@ -49,15 +49,15 @@ jobs:
 
             # write .env from Secrets (Option A)
             sudo bash -lc "cat > /opt/telegram-order-notifier/.env <<EOF
-  TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
-  TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
-  EOF
-  chmod 640 /opt/telegram-order-notifier/.env
-  chown deploy:deploy /opt/telegram-order-notifier/.env"
-  
-  sudo mkdir -p "$RUN_DIR"
-  sudo chown -R deploy:deploy "$RUN_DIR"
-  
-  sudo systemctl daemon-reload || true
-  sudo systemctl restart "${SERVICE}"
-  sudo systemctl status --no-pager "${SERVICE}" || true
+            TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+            TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+            EOF
+            chmod 640 /opt/telegram-order-notifier/.env
+            chown deploy:deploy /opt/telegram-order-notifier/.env"
+            
+            sudo mkdir -p "$RUN_DIR"
+            sudo chown -R deploy:deploy "$RUN_DIR"
+            
+            sudo systemctl daemon-reload || true
+            sudo systemctl restart "${SERVICE}"
+            sudo systemctl status --no-pager "${SERVICE}" || true
