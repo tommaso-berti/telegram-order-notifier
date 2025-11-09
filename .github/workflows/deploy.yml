@@ -1,63 +1,133 @@
-name: Deploy TON (Order Bot su VPS)
+name: Deploy TON (native SSH, public repo over HTTPS)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
   workflow_dispatch:
 
-concurrency: deploy-telegram-order-notifier
+concurrency:
+  group: deploy-telegram-order-notifier
+  cancel-in-progress: true
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Deploy & restart (SSH)
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            set -euo pipefail
+      - name: Prepare SSH key (robust)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${{ secrets.VPS_SSH_KEY }}" ]; then
+            echo "❌ Missing secret VPS_SSH_KEY"; exit 1
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
+          # normalizza CRLF, BOM, escape \n
+          tr -d '\r' < ~/.ssh/deploy_key > ~/.ssh/_tmp && mv ~/.ssh/_tmp ~/.ssh/deploy_key
+          if [ $(wc -l < ~/.ssh/deploy_key) -eq 1 ] && grep -q '\\n' ~/.ssh/deploy_key; then
+            sed 's/\\n/\n/g' ~/.ssh/deploy_key > ~/.ssh/_tmp && mv ~/.ssh/_tmp ~/.ssh/deploy_key
+          fi
+          awk 'NR==1{sub(/^\xef\xbb\xbf/,"")}1' ~/.ssh/deploy_key > ~/.ssh/_tmp && mv ~/.ssh/_tmp ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
 
-            APP_DIR="/opt/telegram-order-notifier/app"
-            RUN_DIR="/opt/telegram-order-notifier/run"
-            SERVICE="orderbot.service"
-            BRANCH="main"
+          # known_hosts del VPS (evita prompt)
+          HOST="${{ secrets.VPS_HOST }}"
+          ssh-keyscan -H -t ed25519 "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -H -t rsa     "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          chmod 644 ~/.ssh/known_hosts
 
+          # porta (opzionale): se non settata, default 22
+          echo "VPS_PORT=${{ secrets.VPS_PORT }}" >> $GITHUB_ENV
+
+      - name: Smoke test SSH connectivity
+        shell: bash
+        run: |
+          HOST="${{ secrets.VPS_HOST }}"
+          USER="${{ secrets.VPS_USER }}"
+          PORT="${{ env.VPS_PORT==-22 }}"
+          echo "Testing SSH to $USER@$HOST:$PORT ..."
+          ssh -o BatchMode=yes -o IdentitiesOnly=yes -i ~/.ssh/deploy_key -p "$PORT" "$USER@$HOST" "echo ok"
+
+      - name: Remote deploy/update & restart service
+        shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -euo pipefail
+          HOST="${{ secrets.VPS_HOST }}"
+          USER="${{ secrets.VPS_USER }}"
+          PORT="${{ env.VPS_PORT==-22 }}"
+
+          ssh -o IdentitiesOnly=yes -i ~/.ssh/deploy_key -p "$PORT" "$USER@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+
+          APP_DIR="/opt/telegram-order-notifier/app"
+          RUN_DIR="/opt/telegram-order-notifier/run"
+          BRANCH="main"
+          SERVICE="orderbot.service"
+
+          # 1) Cartelle
+          sudo mkdir -p "$APP_DIR" "$RUN_DIR"
+          sudo chown -R deploy:deploy /opt/telegram-order-notifier
+
+          # 2) Codice (repo pubblica via HTTPS)
+          if [ ! -d "$APP_DIR/.git" ]; then
+            git clone https://github.com/tommaso-berti/telegram-order-notifier.git "$APP_DIR"
+          else
             cd "$APP_DIR"
-            if [ ! -d .git ]; then
-              git clone https://github.com/tommaso-berti/telegram-order-notifier.git .
-            fi
-
-            # ensure origin over HTTPS (public)
             git remote set-url origin https://github.com/tommaso-berti/telegram-order-notifier.git
-
             git fetch --all --prune --depth=1
             git reset --hard "origin/${BRANCH}"
             git clean -fdx
+          fi
 
-            python3 -m venv .venv || true
-            set +u; source .venv/bin/activate; set -u
-            pip install --upgrade pip
-            if [ -f requirements.txt ]; then
-              pip install -r requirements.txt
-            else
-              pip install yfinance python-telegram-bot pyyaml pandas
-            fi
-            deactivate
+          # 3) Python venv + deps
+          cd "$APP_DIR"
+          python3 -m venv .venv || true
+          set +u; source .venv/bin/activate; set -u
+          pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install yfinance python-telegram-bot pyyaml pandas
+          fi
+          deactivate
 
-            # write .env from Secrets (Option A)
-            sudo bash -lc "cat > /opt/telegram-order-notifier/.env <<EOF
-            TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
-            TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
-            EOF
-            chmod 640 /opt/telegram-order-notifier/.env
-            chown deploy:deploy /opt/telegram-order-notifier/.env"
-            
-            sudo mkdir -p "$RUN_DIR"
-            sudo chown -R deploy:deploy "$RUN_DIR"
-            
-            sudo systemctl daemon-reload || true
-            sudo systemctl restart "${SERVICE}"
-            sudo systemctl status --no-pager "${SERVICE}" || true
+          # 4) Hardening-friendly env (HOME/cache in /opt)
+          sudo mkdir -p "$RUN_DIR/.cache"
+          sudo chown -R deploy:deploy "$RUN_DIR" /opt/telegram-order-notifier
+
+          # 5) (opzionale) verifica unit systemd punti al .env corretto:
+          #    EnvironmentFile=/opt/telegram-order-notifier/.env
+          #    Se diverso, aggiornare la unit.
+
+          # 6) Reload e restart
+          sudo systemctl daemon-reload || true
+          sudo systemctl restart "${SERVICE}"
+          sudo systemctl status --no-pager "${SERVICE}" || true
+          REMOTE
+
+      - name: Write .env remotely (from Secrets) & restart (idempotent)
+        # separo step per avere log più chiari; si può anche unire allo step sopra
+        shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -euo pipefail
+          HOST="${{ secrets.VPS_HOST }}"
+          USER="${{ secrets.VPS_USER }}"
+          PORT="${{ env.VPS_PORT==-22 }}"
+    
+          # scrive il file .env sul VPS senza stampare i valori in chiaro lato runner (comunque GitHub li maschera)
+          ssh -o IdentitiesOnly=yes -i ~/.ssh/deploy_key -p "$PORT" "$USER@$HOST" "sudo bash -lc 'cat > /opt/telegram-order-notifier/.env <<EOF
+          TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+          TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+          EOF
+          chmod 640 /opt/telegram-order-notifier/.env
+          chown deploy:deploy /opt/telegram-order-notifier/.env
+          systemctl daemon-reload || true
+          systemctl restart orderbot.service
+          systemctl status --no-pager orderbot.service || true'"
