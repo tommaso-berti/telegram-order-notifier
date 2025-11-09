@@ -1,8 +1,8 @@
-name: Deploy TON (native SSH, public repo over HTTPS)
+name: Deploy TON (Order Bot via SSH)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 concurrency:
@@ -12,8 +12,10 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
+      - uses: actions/checkout@v4
+
+      # === Prepare SSH key (robust) — stesso stile del tuo workflow React ===
       - name: Prepare SSH key (robust)
         shell: bash
         run: |
@@ -23,111 +25,81 @@ jobs:
           fi
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
-          # normalizza CRLF, BOM, escape \n
+          # normalizza CRLF, \n escaped, BOM
           tr -d '\r' < ~/.ssh/deploy_key > ~/.ssh/_tmp && mv ~/.ssh/_tmp ~/.ssh/deploy_key
           if [ $(wc -l < ~/.ssh/deploy_key) -eq 1 ] && grep -q '\\n' ~/.ssh/deploy_key; then
             sed 's/\\n/\n/g' ~/.ssh/deploy_key > ~/.ssh/_tmp && mv ~/.ssh/_tmp ~/.ssh/deploy_key
           fi
           awk 'NR==1{sub(/^\xef\xbb\xbf/,"")}1' ~/.ssh/deploy_key > ~/.ssh/_tmp && mv ~/.ssh/_tmp ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-
-          # known_hosts del VPS (evita prompt)
-          HOST="${{ secrets.VPS_HOST }}"
-          ssh-keyscan -H -t ed25519 "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-          ssh-keyscan -H -t rsa     "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keygen -y -f ~/.ssh/deploy_key > ~/.ssh/deploy_key.pub
+          ssh-keyscan -H -t ed25519 "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -H -t rsa     "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
           chmod 644 ~/.ssh/known_hosts
 
-          # porta (opzionale): se non settata, default 22
-          echo "VPS_PORT=${{ secrets.VPS_PORT }}" >> $GITHUB_ENV
-
-      - name: Smoke test SSH connectivity
+      # === Ensure remote app dir (come "Ensure remote release dir" ma senza releases) ===
+      - name: Ensure remote app dir
         shell: bash
         run: |
-          HOST="${{ secrets.VPS_HOST }}"
-          USER="${{ secrets.VPS_USER }}"
-          PORT="${{ env.VPS_PORT==-22 }}"
-          echo "Testing SSH to $USER@$HOST:$PORT ..."
-          ssh -o BatchMode=yes -o IdentitiesOnly=yes -i ~/.ssh/deploy_key -p "$PORT" "$USER@$HOST" "echo ok"
+          REMOTE_BASE="/opt/telegram-order-notifier"
+          REMOTE_APP="$REMOTE_BASE/app"
+          ssh -o IdentitiesOnly=yes -i ~/.ssh/deploy_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "sudo mkdir -p \"$REMOTE_APP\" \"$REMOTE_BASE/run\" && sudo chown -R deploy:deploy \"$REMOTE_BASE\""
 
-      - name: Remote deploy/update & restart service
+      # === Pull codice (HTTPS repo pubblica) nello stesso path usato dal service ===
+      - name: Update code (git over HTTPS)
         shell: bash
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          set -euo pipefail
-          HOST="${{ secrets.VPS_HOST }}"
-          USER="${{ secrets.VPS_USER }}"
-          PORT="${{ env.VPS_PORT==-22 }}"
+          REMOTE_APP="/opt/telegram-order-notifier/app"
+          ssh -o IdentitiesOnly=yes -i ~/.ssh/deploy_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "cd \"$REMOTE_APP\" && \
+             if [ ! -d .git ]; then \
+               git clone https://github.com/tommaso-berti/telegram-order-notifier.git .; \
+             else \
+               git remote set-url origin https://github.com/tommaso-berti/telegram-order-notifier.git && \
+               git fetch --all --prune --depth=1 && \
+               git reset --hard origin/main && \
+               git clean -fdx; \
+             fi"
 
-          ssh -o IdentitiesOnly=yes -i ~/.ssh/deploy_key -p "$PORT" "$USER@$HOST" 'bash -s' <<'REMOTE'
-          set -euo pipefail
+      # === Venv & deps nella cartella app (matcha ExecStart del tuo service) ===
+      - name: Setup venv & install requirements (remote)
+        shell: bash
+        run: |
+          REMOTE_APP="/opt/telegram-order-notifier/app"
+          ssh -o IdentitiesOnly=yes -i ~/.ssh/deploy_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "cd \"$REMOTE_APP\" && \
+             python3 -m venv .venv || true && \
+             set +u; source .venv/bin/activate; set -u; \
+             pip install --upgrade pip && \
+             if [ -f requirements.txt ]; then \
+               pip install -r requirements.txt; \
+             else \
+               pip install yfinance python-telegram-bot pyyaml pandas; \
+             fi"
 
-          APP_DIR="/opt/telegram-order-notifier/app"
-          RUN_DIR="/opt/telegram-order-notifier/run"
-          BRANCH="main"
-          SERVICE="orderbot.service"
-
-          # 1) Cartelle
-          sudo mkdir -p "$APP_DIR" "$RUN_DIR"
-          sudo chown -R deploy:deploy /opt/telegram-order-notifier
-
-          # 2) Codice (repo pubblica via HTTPS)
-          if [ ! -d "$APP_DIR/.git" ]; then
-            git clone https://github.com/tommaso-berti/telegram-order-notifier.git "$APP_DIR"
-          else
-            cd "$APP_DIR"
-            git remote set-url origin https://github.com/tommaso-berti/telegram-order-notifier.git
-            git fetch --all --prune --depth=1
-            git reset --hard "origin/${BRANCH}"
-            git clean -fdx
-          fi
-
-          # 3) Python venv + deps
-          cd "$APP_DIR"
-          python3 -m venv .venv || true
-          set +u; source .venv/bin/activate; set -u
-          pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          else
-            pip install yfinance python-telegram-bot pyyaml pandas
-          fi
-          deactivate
-
-          # 4) Hardening-friendly env (HOME/cache in /opt)
-          sudo mkdir -p "$RUN_DIR/.cache"
-          sudo chown -R deploy:deploy "$RUN_DIR" /opt/telegram-order-notifier
-
-          # 5) (opzionale) verifica unit systemd punti al .env corretto:
-          #    EnvironmentFile=/opt/telegram-order-notifier/.env
-          #    Se diverso, aggiornare la unit.
-
-          # 6) Reload e restart
-          sudo systemctl daemon-reload || true
-          sudo systemctl restart "${SERVICE}"
-          sudo systemctl status --no-pager "${SERVICE}" || true
-          REMOTE
-
-      - name: Write .env remotely (from Secrets) & restart (idempotent)
-        # separo step per avere log più chiari; si può anche unire allo step sopra
+      # === Scrive/aggiorna .env dai Secrets nel path che legge il service ===
+      - name: Write .env (from GitHub Secrets)
         shell: bash
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          set -euo pipefail
-          HOST="${{ secrets.VPS_HOST }}"
-          USER="${{ secrets.VPS_USER }}"
-          PORT="${{ env.VPS_PORT==-22 }}"
-    
-          # scrive il file .env sul VPS senza stampare i valori in chiaro lato runner (comunque GitHub li maschera)
-          ssh -o IdentitiesOnly=yes -i ~/.ssh/deploy_key -p "$PORT" "$USER@$HOST" "sudo bash -lc 'cat > /opt/telegram-order-notifier/.env <<EOF
+          REMOTE_BASE="/opt/telegram-order-notifier"
+          ssh -o IdentitiesOnly=yes -i ~/.ssh/deploy_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "sudo bash -lc 'cat > ${REMOTE_BASE}/.env <<EOF
           TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
           TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
           EOF
-          chmod 640 /opt/telegram-order-notifier/.env
-          chown deploy:deploy /opt/telegram-order-notifier/.env
-          systemctl daemon-reload || true
-          systemctl restart orderbot.service
-          systemctl status --no-pager orderbot.service || true'"
+          chmod 640 ${REMOTE_BASE}/.env
+          chown deploy:deploy ${REMOTE_BASE}/.env
+          '"
+
+      # === Restart service (come il tuo "reload caddy", ma per orderbot) ===
+      - name: Restart orderbot.service
+        shell: bash
+        run: |
+          ssh -o IdentitiesOnly=yes -i ~/.ssh/deploy_key "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "sudo -n systemctl daemon-reload || true; \
+             sudo -n systemctl restart orderbot.service || true; \
+             sudo -n systemctl status --no-pager orderbot.service || true"
